@@ -5,7 +5,7 @@ const expectApproxEqAbs = std.testing.expectApproxEqAbs;
 const bad_type = "sample type must be u8, i16, i24, i32, or f32";
 
 /// Converts between PCM and float sample types.
-pub fn convert(comptime T: type, comptime value: anytype) T {
+pub fn convert(comptime T: type, value: anytype) T {
     const S = @TypeOf(value);
     if (S == T) {
         return value;
@@ -55,8 +55,8 @@ fn convertIntToFloat(comptime T: type, value: anytype) T {
 fn convertSignedInt(comptime T: type, value: anytype) T {
     const S = @TypeOf(value);
 
-    const src_bits = @typeInfo(S).Int.bits;
-    const dst_bits = @typeInfo(T).Int.bits;
+    const src_bits = @typeInfo(S).int.bits;
+    const dst_bits = @typeInfo(T).int.bits;
 
     if (src_bits < dst_bits) {
         const shift = dst_bits - src_bits;

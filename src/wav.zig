@@ -102,7 +102,7 @@ pub fn Decoder(comptime InnerReaderType: type) type {
 
         /// Parse and validate headers/metadata. Prepare to read samples.
         fn init(inner_reader: InnerReaderType) Error!Self {
-            comptime std.debug.assert(builtin.target.cpu.arch.endian() == .Little);
+            comptime std.debug.assert(builtin.target.cpu.arch.endian() == .little);
 
             var counting_reader = ReaderType{ .child_reader = inner_reader };
             var reader = counting_reader.reader();

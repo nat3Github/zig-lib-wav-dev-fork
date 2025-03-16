@@ -112,7 +112,7 @@ pub fn Decoder(comptime InnerReaderType: type) type {
                 std.log.debug("not a RIFF file", .{});
                 return error.InvalidFileType;
             }
-            const total_size = try std.math.add(u32, try reader.readIntLittle(u32), 8);
+            const total_size = try std.math.add(u32, try reader.readInt(u32, .little), 8);
 
             chunk_id = try reader.readBytesNoEof(4);
             if (!std.mem.eql(u8, "WAVE", &chunk_id)) {
@@ -126,7 +126,7 @@ pub fn Decoder(comptime InnerReaderType: type) type {
             var chunk_size: usize = 0;
             while (true) {
                 chunk_id = try reader.readBytesNoEof(4);
-                chunk_size = try reader.readIntLittle(u32);
+                chunk_size = try reader.readInt(u32, .little);
 
                 if (std.mem.eql(u8, "fmt ", &chunk_id)) {
                     fmt = try FormatChunk.parse(reader, chunk_size);
@@ -205,8 +205,8 @@ pub fn Decoder(comptime InnerReaderType: type) type {
                     T,
                     // Propagate EndOfStream error on truncation.
                     switch (@typeInfo(S)) {
-                        .Float => try readFloat(S, reader),
-                        .Int => try reader.readIntLittle(S),
+                        .float => try readFloat(S, reader),
+                        .int => try reader.readInt(S, .little),
                         else => @compileError(bad_type),
                     },
                 );
@@ -297,7 +297,7 @@ pub fn Encoder(
                 i24,
                 => {
                     for (buf) |x| {
-                        try self.writer.writeIntLittle(T, sample.convert(T, x));
+                        try self.writer.writeInt(T, sample.convert(T, x), .little);
                         self.data_size += @bitSizeOf(T) / 8;
                     }
                 },
@@ -321,15 +321,15 @@ pub fn Encoder(
             }
 
             try self.writer.writeAll("RIFF");
-            try self.writer.writeIntLittle(u32, @intCast(header_size + self.data_size)); // Overwritten by finalize().
+            try self.writer.writeInt(u32, @intCast(header_size + self.data_size), .little); // Overwritten by finalize().
             try self.writer.writeAll("WAVE");
 
             try self.writer.writeAll("fmt ");
-            try self.writer.writeIntLittle(u32, @sizeOf(@TypeOf(self.fmt)));
+            try self.writer.writeInt(u32, @sizeOf(@TypeOf(self.fmt)), .little);
             try self.writer.writeStruct(self.fmt);
 
             try self.writer.writeAll("data");
-            try self.writer.writeIntLittle(u32, @intCast(self.data_size));
+            try self.writer.writeInt(u32, @intCast(self.data_size), .little);
         }
 
         /// Must be called once writing is complete. Writes total size to file header.

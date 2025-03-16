@@ -198,7 +198,7 @@ pub fn Decoder(comptime InnerReaderType: type) type {
         fn readInternal(self: *Self, comptime S: type, comptime T: type, buf: []T) Error!usize {
             var reader = self.counting_reader.reader();
 
-            const limit = std.math.min(buf.len, self.remaining());
+            const limit = @min(buf.len, self.remaining());
             var i: usize = 0;
             while (i < limit) : (i += 1) {
                 buf[i] = sample.convert(

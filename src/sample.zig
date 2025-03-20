@@ -16,7 +16,7 @@ pub fn convert(comptime T: type, value: anytype) T {
         const new_value: i8 = @bitCast(value -% 128);
         return convert(T, new_value);
     } else if (T == u8) {
-        const rval: T = @bitCast(convert(i8, value));
+        const rval: u8 = @bitCast(convert(i8, value));
         return rval +% 128;
     }
 
@@ -48,8 +48,9 @@ fn convertFloatToInt(comptime T: type, value: anytype) T {
 
 fn convertIntToFloat(comptime T: type, value: anytype) T {
     const S = @TypeOf(value);
-    const new_value: T = @floatFromInt(std.math.maxInt(S));
-    return 1.0 / (1.0 + new_value) * new_value;
+    const max_value: T = @floatFromInt(std.math.maxInt(S));
+    const value_as_float: T = @floatFromInt(value);
+    return 1.0 / (1.0 + max_value) * value_as_float;
 }
 
 fn convertSignedInt(comptime T: type, value: anytype) T {

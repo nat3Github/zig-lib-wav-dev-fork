@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn bufferedWriteStream(comptime buffer_size: usize, WriteSeekableStream: anytype) BufferedReadStream(buffer_size, @TypeOf(WriteSeekableStream.writer()), @TypeOf(WriteSeekableStream.seekableStream())) {
+pub fn bufferedWriteStream(comptime buffer_size: usize, WriteSeekableStream: anytype) BufferedWriteStream(buffer_size, @TypeOf(WriteSeekableStream.writer()), @TypeOf(WriteSeekableStream.seekableStream())) {
     const BuffStream = BufferedWriteStream(buffer_size, @TypeOf(WriteSeekableStream.writer()), @TypeOf(WriteSeekableStream.seekableStream()));
     return BuffStream.init(WriteSeekableStream.writer(), WriteSeekableStream.seekableStream());
 }
@@ -68,7 +68,7 @@ pub fn BufferedWriteStream(buffer_size: usize, WriterType: type, SeekableStreamT
 
 pub fn bufferedReadStream(comptime buffer_size: usize, ReadSeekableStream: anytype) BufferedReadStream(buffer_size, @TypeOf(ReadSeekableStream.reader()), @TypeOf(ReadSeekableStream.seekableStream())) {
     const BuffStream = BufferedReadStream(buffer_size, @TypeOf(ReadSeekableStream.reader()), @TypeOf(ReadSeekableStream.seekableStream()));
-    return BuffStream.init(ReadSeekableStream.reader(), ReadSeekableStream.writer());
+    return BuffStream.init(ReadSeekableStream.reader(), ReadSeekableStream.seekableStream());
 }
 
 pub fn BufferedReadStream(buffer_size: usize, ReaderType: type, SeekableStreamType: type) type {

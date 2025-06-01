@@ -276,3 +276,14 @@ test "encode-decode sine" {
     try testEncodeDecode(i24, 48000);
     try testEncodeDecode(i16, 44100);
 }
+
+test "pseudo test for bufferd read" {
+    var file = try std.fs.cwd().openFile("test/error-data_size1.wav", .{});
+    defer file.close();
+    _ = wav.bufferedReadStream(4096, &file);
+}
+test "pseudo test for bufferd write" {
+    var file = try std.fs.cwd().createFile("test/emptyfile", .{});
+    defer file.close();
+    _ = wav.bufferedWriteStream(4096, &file);
+}

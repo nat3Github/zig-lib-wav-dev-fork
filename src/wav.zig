@@ -4,10 +4,10 @@ const assert = std.debug.assert;
 const buffered_io = @import("buffered_io.zig");
 
 /// helper for buffered writing / reading
-pub const BufferedWriteStream = buffered_io.bufferedReadStream;
-pub const BufferedReadStream = buffered_io.bufferedWriteStream;
-pub const bufferedWriteStream = buffered_io.BufferedReadStream;
-pub const bufferedReadStream = buffered_io.BufferedWriteStream;
+pub const bufferedWriteStream = buffered_io.bufferedReadStream;
+pub const bufferedReadStream = buffered_io.bufferedWriteStream;
+pub const BufferedWriteStream = buffered_io.BufferedReadStream;
+pub const BufferedReadStream = buffered_io.BufferedWriteStream;
 
 pub const tests = @import("tests.zig");
 test "test" {
@@ -338,9 +338,6 @@ pub fn Encoder(
 ) type {
     return struct {
         const Self = @This();
-
-        const Error = WriterType.Error || SeekableType.SeekError || error{ InvalidArgument, Overflow };
-
         writer: WriterType,
         seekable: SeekableType,
 
@@ -352,7 +349,7 @@ pub fn Encoder(
             seekable: SeekableType,
             sample_rate: usize,
             channel_num: usize,
-        ) Error!Self {
+        ) !Self {
             const bits = switch (T) {
                 u8 => 8,
                 i16 => 16,
@@ -399,7 +396,7 @@ pub fn Encoder(
         pub fn channels(self: *const Self) usize {
             return self.fmt.channels;
         }
-        pub fn writeEx(self: *Self, comptime S: type, buf: []const S, frame_num: usize, comptime interleaved: bool) Error!void {
+        pub fn writeEx(self: *Self, comptime S: type, buf: []const S, frame_num: usize, comptime interleaved: bool) !void {
             assert(buf.len % self.channels() == 0);
             const frames = @min(buf.len / self.channels(), frame_num);
 
@@ -430,12 +427,12 @@ pub fn Encoder(
         /// IEEE float. Multi-channel samples must be interleaved: samples for time `t` for all channels
         /// are written to `t * channels`.
         /// buf.len must be multiple of channels
-        pub fn write(self: *Self, comptime S: type, buf: []const S, comptime interleaved: bool) Error!void {
+        pub fn write(self: *Self, comptime S: type, buf: []const S, comptime interleaved: bool) !void {
             assert(buf.len % self.channels() == 0);
-            self.writeEx(S, buf, buf.len / self.channels(), interleaved);
+            try self.writeEx(S, buf, buf.len / self.channels(), interleaved);
         }
 
-        fn writeHeader(self: *Self) Error!void {
+        fn writeHeader(self: *Self) !void {
             // Size of RIFF header + fmt id/size + fmt chunk + data id/size.
             const header_size: usize = 12 + 8 + @sizeOf(@TypeOf(self.fmt)) + 8;
 
@@ -455,7 +452,7 @@ pub fn Encoder(
             try self.writer.writeInt(u32, @intCast(self.data_size), .little);
         }
         /// Must be called once writing is complete. Writes total size to file header.
-        pub fn finalize(self: *Self) Error!void {
+        pub fn finalize(self: *Self) !void {
             try self.seekable.seekTo(0);
             try self.writeHeader();
         }

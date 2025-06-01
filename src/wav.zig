@@ -108,10 +108,11 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
             return bytes_remaining / sample_size;
         }
         /// Parse and validate headers/metadata. Prepare to read samples.
-        fn init(inner_reader: InnerReaderType, seekable_stream: SeekAbleStreamType) Error!Self {
+        fn init(readable: InnerReaderType, seekable: SeekAbleStreamType) Error!Self {
             comptime std.debug.assert(builtin.target.cpu.arch.endian() == .little);
+            try seekable.seekTo(0);
 
-            var counting_reader = ReaderType{ .child_reader = inner_reader };
+            var counting_reader = ReaderType{ .child_reader = readable };
             var reader = counting_reader.reader();
 
             var chunk_id = try reader.readBytesNoEof(4);
@@ -176,7 +177,7 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
                 .fmt = fmt.?,
                 .data_start = data_start,
                 .data_size = data_size,
-                .seekable_stream = seekable_stream,
+                .seekable_stream = seekable,
             };
         }
 
@@ -371,7 +372,7 @@ pub fn Encoder(
                 std.log.debug("bytes_per_second, {}, too large", .{bytes_per_second});
                 return error.InvalidArgument;
             }
-
+            try seekable.seekTo(0);
             var self = Self{
                 .writer = writer,
                 .seekable = seekable,

@@ -202,12 +202,13 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
             var reader = self.counting_reader.reader();
             const limit = @min(buf.len, self.remaining());
             const frames = limit / self.channels();
+            const total_frames = buf.len / self.channels();
             for (0..frames) |frame| {
                 for (0..self.channels()) |channel| {
                     const index = if (interleaved)
                         sample.interleaved_index(self.channels(), frame, channel)
                     else
-                        sample.planar_index(frames, frame, channel);
+                        sample.planar_index(total_frames, frame, channel);
                     const s = sample.convert(T, switch (@typeInfo(S)) {
                         .float => try readFloat(S, reader),
                         .int => try reader.readInt(S, .little),
@@ -216,12 +217,12 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
                     buf[index] = s;
                 }
             }
-            for (frames..buf.len / self.channels()) |frame| {
+            for (frames..buf.len / total_frames) |frame| {
                 for (0..self.channels()) |channel| {
                     const index = if (interleaved)
                         sample.interleaved_index(self.channels(), frame, channel)
                     else
-                        sample.planar_index(frames, frame, channel);
+                        sample.planar_index(total_frames, frame, channel);
                     buf[index] = sample.convert(T, @as(f32, 0.0));
                 }
             }
@@ -399,14 +400,14 @@ pub fn Encoder(
         }
         pub fn writeEx(self: *Self, comptime S: type, buf: []const S, frame_num: usize, comptime interleaved: bool) !void {
             assert(buf.len % self.channels() == 0);
-            const frames = @min(buf.len / self.channels(), frame_num);
-
+            const total_frames = buf.len / self.channels();
+            const frames = @min(total_frames, frame_num);
             for (0..frames) |frame| {
                 for (0..self.channels()) |channel| {
                     const index = if (interleaved)
                         sample.interleaved_index(self.channels(), frame, channel)
                     else
-                        sample.planar_index(frames, frame, channel);
+                        sample.planar_index(total_frames, frame, channel);
                     const x = buf[index];
                     switch (T) {
                         u8, i16, i24 => {

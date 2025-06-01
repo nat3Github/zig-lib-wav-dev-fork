@@ -217,7 +217,7 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
                     buf[index] = s;
                 }
             }
-            for (frames..buf.len / total_frames) |frame| {
+            for (frames..total_frames) |frame| {
                 for (0..self.channels()) |channel| {
                     const index = if (interleaved)
                         sample.interleaved_index(self.channels(), frame, channel)

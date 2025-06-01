@@ -1,6 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
+const buffered_io = @import("buffered_io.zig");
+
+/// helper for buffered writing / reading
+pub const BufferedWriteStream = buffered_io.bufferedReadStream;
+pub const BufferedReadStream = buffered_io.bufferedWriteStream;
+pub const bufferedWriteStream = buffered_io.BufferedReadStream;
+pub const bufferedReadStream = buffered_io.BufferedWriteStream;
+
 pub const tests = @import("tests.zig");
 test "test" {
     _ = .{tests};

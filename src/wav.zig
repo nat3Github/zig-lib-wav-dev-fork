@@ -240,8 +240,8 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
             const frame_number = @min(frame, self.totalFrames());
             const bytes_per_frame = (self.fmt.bits / 8) * self.fmt.channels;
             const target_data_offset = frame_number * bytes_per_frame;
-            const absolute_target_offset = self.data_start + target_data_offset;
-            try self.seekable_stream.seekTo(absolute_target_offset, .set);
+            const absolute_target_offset = @as(u64, self.data_start + target_data_offset);
+            try self.seekable_stream.seekTo(absolute_target_offset);
             self.counting_reader.bytes_read = absolute_target_offset;
             return self.currentFrame();
         }

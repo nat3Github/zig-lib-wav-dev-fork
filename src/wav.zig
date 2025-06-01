@@ -4,10 +4,10 @@ const assert = std.debug.assert;
 const buffered_io = @import("buffered_io.zig");
 
 /// helper for buffered writing / reading
-pub const bufferedWriteStream = buffered_io.bufferedReadStream;
-pub const bufferedReadStream = buffered_io.bufferedWriteStream;
-pub const BufferedWriteStream = buffered_io.BufferedReadStream;
-pub const BufferedReadStream = buffered_io.BufferedWriteStream;
+pub const bufferedReadStream = buffered_io.bufferedReadStream;
+pub const bufferedWriteStream = buffered_io.bufferedWriteStream;
+pub const BufferedReadStream = buffered_io.BufferedReadStream;
+pub const BufferedWriteStream = buffered_io.BufferedWriteStream;
 
 pub const tests = @import("tests.zig");
 test "test" {

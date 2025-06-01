@@ -1,10 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const sample = @import("sample.zig");
-const expectEqual = std.testing.expectEqual;
-const expectError = std.testing.expectError;
-
 const bad_type = "sample type must be u8, i16, i24, or f32";
+const assert = std.debug.assert;
+pub const tests = @import("tests.zig");
+test "test" {
+    _ = .{tests};
+}
 
 fn readFloat(comptime T: type, reader: anytype) !T {
     var f: T = undefined;
@@ -67,7 +68,7 @@ const FormatChunk = packed struct {
 };
 
 /// Loads wav file from stream. Read and convert samples to a desired type.
-pub fn Decoder(comptime InnerReaderType: type) type {
+pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type) type {
     return struct {
         const Self = @This();
 
@@ -75,6 +76,7 @@ pub fn Decoder(comptime InnerReaderType: type) type {
         const Error = ReaderType.Error || error{ EndOfStream, InvalidFileType, InvalidArgument, InvalidSize, InvalidValue, Overflow, Unsupported };
 
         counting_reader: ReaderType,
+        seekable_stream: SeekAbleStreamType,
         fmt: FormatChunk,
         data_start: usize,
         data_size: usize,
@@ -90,7 +92,6 @@ pub fn Decoder(comptime InnerReaderType: type) type {
         pub fn bits(self: *const Self) usize {
             return self.fmt.bits;
         }
-
         /// Number of samples remaining.
         pub fn remaining(self: *const Self) usize {
             const sample_size = self.bits() / 8;
@@ -99,9 +100,8 @@ pub fn Decoder(comptime InnerReaderType: type) type {
             std.debug.assert(bytes_remaining % sample_size == 0);
             return bytes_remaining / sample_size;
         }
-
         /// Parse and validate headers/metadata. Prepare to read samples.
-        fn init(inner_reader: InnerReaderType) Error!Self {
+        fn init(inner_reader: InnerReaderType, seekable_stream: SeekAbleStreamType) Error!Self {
             comptime std.debug.assert(builtin.target.cpu.arch.endian() == .little);
 
             var counting_reader = ReaderType{ .child_reader = inner_reader };
@@ -119,7 +119,6 @@ pub fn Decoder(comptime InnerReaderType: type) type {
                 std.log.debug("not a WAVE file", .{});
                 return error.InvalidFileType;
             }
-
             // Iterate through chunks. Require fmt and data.
             var fmt: ?FormatChunk = null;
             var data_size: usize = 0; // Bytes in data chunk.
@@ -170,55 +169,159 @@ pub fn Decoder(comptime InnerReaderType: type) type {
                 .fmt = fmt.?,
                 .data_start = data_start,
                 .data_size = data_size,
+                .seekable_stream = seekable_stream,
             };
         }
 
         /// Read samples from stream and converts to type T. Supports PCM encoded ints and IEEE float.
-        /// Multi-channel samples are interleaved: samples for time `t` for all channels are written to
-        /// `t * channels`. Thus, `buf.len` must be evenly divisible by `channels`.
-        ///
-        /// Errors:
-        ///     InvalidArgument - `buf.len` not evenly divisible `channels`.
-        ///
-        /// Returns: number of bytes read. 0 indicates end of stream.
-        pub fn read(self: *Self, comptime T: type, buf: []T) Error!usize {
+        /// returns frames read, rest of buffer is nulled
+        pub fn read(self: *Self, comptime T: type, buf: []T, comptime interleaved: bool) !usize {
+            assert(buf.len % self.channels() == 0);
             return switch (self.fmt.code) {
                 .pcm => switch (self.fmt.bits) {
-                    8 => self.readInternal(u8, T, buf),
-                    16 => self.readInternal(i16, T, buf),
-                    24 => self.readInternal(i24, T, buf),
-                    32 => self.readInternal(i32, T, buf),
-                    else => std.debug.panic("invalid decoder state, unexpected fmt bits {}", .{self.fmt.bits}),
+                    8 => self.readInternal(u8, T, buf, interleaved),
+                    16 => self.readInternal(i16, T, buf, interleaved),
+                    24 => self.readInternal(i24, T, buf, interleaved),
+                    32 => self.readInternal(i32, T, buf, interleaved),
+                    else => unreachable,
                 },
-                .ieee_float => self.readInternal(f32, T, buf),
-                else => std.debug.panic("invalid decoder state, unexpected fmt code {}", .{self.fmt.code}),
+                .ieee_float => self.readInternal(f32, T, buf, interleaved),
+                else => unreachable,
             };
         }
-
-        fn readInternal(self: *Self, comptime S: type, comptime T: type, buf: []T) Error!usize {
+        fn readInternal(self: *Self, comptime S: type, comptime T: type, buf: []T, comptime interleaved: bool) !usize {
+            assert(buf.len % self.channels() == 0);
             var reader = self.counting_reader.reader();
-
+            // std.log.warn("remaining : {}", .{self.remaining()});
             const limit = @min(buf.len, self.remaining());
-            var i: usize = 0;
-            while (i < limit) : (i += 1) {
-                buf[i] = sample.convert(
-                    T,
-                    // Propagate EndOfStream error on truncation.
-                    switch (@typeInfo(S)) {
+            const frames = limit / self.channels();
+            for (0..frames) |frame| {
+                for (0..self.channels()) |channel| {
+                    const index = if (interleaved)
+                        sample.interleaved_index(self.channels(), frame, channel)
+                    else
+                        sample.planar_index(frames, frame, channel);
+                    const s = sample.convert(T, switch (@typeInfo(S)) {
                         .float => try readFloat(S, reader),
                         .int => try reader.readInt(S, .little),
-                        else => @compileError(bad_type),
-                    },
-                );
+                        else => unreachable,
+                    });
+                    buf[index] = s;
+                }
             }
-            return i;
+            for (frames..buf.len / self.channels()) |frame| {
+                for (0..self.channels()) |channel| {
+                    const index = if (interleaved)
+                        sample.interleaved_index(self.channels(), frame, channel)
+                    else
+                        sample.planar_index(frames, frame, channel);
+                    buf[index] = sample.convert(T, @as(f32, 0.0));
+                }
+            }
+            return frames;
+        }
+        pub fn totalFrames(self: *const Self) usize {
+            const bytes_per_frame = (self.fmt.bits / 8) * self.fmt.channels;
+            return self.data_size / bytes_per_frame;
+        }
+        pub fn currentFrame(self: *const Self) usize {
+            const bytes_read_in_data_chunk = self.counting_reader.bytes_read - self.data_start;
+            const bytes_per_frame = (self.fmt.bits / 8) * self.fmt.channels;
+            return bytes_read_in_data_chunk / bytes_per_frame;
+        }
+
+        pub fn seekToFrame(self: *Self, frame: usize) !usize {
+            const frame_number = @min(frame, self.totalFrames());
+            const bytes_per_frame = (self.fmt.bits / 8) * self.fmt.channels;
+            const target_data_offset = frame_number * bytes_per_frame;
+            const absolute_target_offset = self.data_start + target_data_offset;
+            try self.seekable_stream.seekTo(absolute_target_offset, .set);
+            self.counting_reader.bytes_read = absolute_target_offset;
+            return self.currentFrame();
         }
     };
 }
 
-pub fn decoder(reader: anytype) !Decoder(@TypeOf(reader)) {
-    return Decoder(@TypeOf(reader)).init(reader);
+pub fn decoder(ReadSeekableStream: anytype) !Decoder(@TypeOf(ReadSeekableStream.reader()), @TypeOf(ReadSeekableStream.seekableStream())) {
+    const Dec = Decoder(@TypeOf(ReadSeekableStream.reader()), @TypeOf(ReadSeekableStream.seekableStream()));
+    return Dec.init(ReadSeekableStream.reader(), ReadSeekableStream.seekableStream());
 }
+
+pub const sample = struct {
+    pub fn interleaved_index(channels_total: usize, frame: usize, channel: usize) usize {
+        return frame * channels_total + channel;
+    }
+
+    pub fn planar_index(frames_total: usize, frame: usize, channel: usize) usize {
+        return channel * frames_total + frame;
+    }
+    /// Converts between PCM and float sample types.
+    pub fn convert(comptime T: type, value: anytype) T {
+        const S = @TypeOf(value);
+        if (S == T) {
+            return value;
+        }
+
+        // PCM uses unsigned 8-bit ints instead of signed. Special case.
+        if (S == u8) {
+            const new_value: i8 = @bitCast(value -% 128);
+            return convert(T, new_value);
+        } else if (T == u8) {
+            const rval: u8 = @bitCast(convert(i8, value));
+            return rval +% 128;
+        }
+
+        return switch (S) {
+            i8, i16, i24, i32 => switch (T) {
+                i8, i16, i24, i32 => convertSignedInt(T, value),
+                f32 => convertIntToFloat(T, value),
+                else => @compileError(bad_type),
+            },
+            f32 => switch (T) {
+                i8, i16, i24, i32 => convertFloatToInt(T, value),
+                f32 => value,
+                else => @compileError(bad_type),
+            },
+            else => @compileError(bad_type),
+        };
+    }
+
+    fn convertFloatToInt(comptime T: type, value: anytype) T {
+        const S = @TypeOf(value);
+
+        const min: S = comptime @floatFromInt(std.math.minInt(T));
+        const max: S = comptime @floatFromInt(std.math.maxInt(T));
+
+        // Need lossyCast instead of @floatToInt because float representation of max/min T may be
+        // out of range.
+        return std.math.lossyCast(T, std.math.clamp(@round(value * (1.0 + max)), min, max));
+    }
+
+    fn convertIntToFloat(comptime T: type, value: anytype) T {
+        const S = @TypeOf(value);
+        const max_value: T = @floatFromInt(std.math.maxInt(S));
+        const value_as_float: T = @floatFromInt(value);
+        return 1.0 / (1.0 + max_value) * value_as_float;
+    }
+
+    fn convertSignedInt(comptime T: type, value: anytype) T {
+        const S = @TypeOf(value);
+
+        const src_bits = @typeInfo(S).int.bits;
+        const dst_bits = @typeInfo(T).int.bits;
+
+        if (src_bits < dst_bits) {
+            const shift = dst_bits - src_bits;
+            return @as(T, value) << shift;
+        } else if (src_bits > dst_bits) {
+            const shift = src_bits - dst_bits;
+            return @intCast(value >> shift);
+        }
+
+        comptime std.debug.assert(S == T);
+        return value;
+    }
+};
 
 /// Encode audio samples to wav file. Must call `finalize()` once complete. Samples will be encoded
 /// with type T (PCM int or IEEE float).
@@ -331,7 +434,6 @@ pub fn Encoder(
             try self.writer.writeAll("data");
             try self.writer.writeInt(u32, @intCast(self.data_size), .little);
         }
-
         /// Must be called once writing is complete. Writes total size to file header.
         pub fn finalize(self: *Self) Error!void {
             try self.seekable.seekTo(0);
@@ -342,199 +444,10 @@ pub fn Encoder(
 
 pub fn encoder(
     comptime T: type,
-    writer: anytype,
-    seekable: anytype,
+    WriteSeekableStream: anytype,
     sample_rate: usize,
     channels: usize,
-) !Encoder(T, @TypeOf(writer), @TypeOf(seekable)) {
-    return Encoder(T, @TypeOf(writer), @TypeOf(seekable)).init(writer, seekable, sample_rate, channels);
-}
-
-test "pcm(bits=8) sample_rate=22050 channels=1" {
-    var file = try std.fs.cwd().openFile("test/pcm8_22050_mono.wav", .{});
-    defer file.close();
-
-    var wav_decoder = try decoder(file.reader());
-    try expectEqual(@as(usize, 22050), wav_decoder.sampleRate());
-    try expectEqual(@as(usize, 1), wav_decoder.channels());
-    try expectEqual(@as(usize, 8), wav_decoder.bits());
-    try expectEqual(@as(usize, 104676), wav_decoder.remaining());
-
-    var buf: [64]f32 = undefined;
-    while (true) {
-        if (try wav_decoder.read(f32, &buf) < buf.len) {
-            break;
-        }
-    }
-}
-
-test "pcm(bits=16) sample_rate=44100 channels=2" {
-    const data_len: usize = 312542;
-
-    var file = try std.fs.cwd().openFile("test/pcm16_44100_stereo.wav", .{});
-    defer file.close();
-
-    var wav_decoder = try decoder(file.reader());
-    try expectEqual(@as(usize, 44100), wav_decoder.sampleRate());
-    try expectEqual(@as(usize, 2), wav_decoder.channels());
-    try expectEqual(@as(usize, data_len), wav_decoder.remaining());
-
-    const buf = try std.testing.allocator.alloc(i16, data_len);
-    defer std.testing.allocator.free(buf);
-
-    try expectEqual(data_len, try wav_decoder.read(i16, buf));
-    try expectEqual(@as(usize, 0), try wav_decoder.read(i16, buf));
-    try expectEqual(@as(usize, 0), wav_decoder.remaining());
-}
-
-test "pcm(bits=24) sample_rate=48000 channels=1" {
-    var file = try std.fs.cwd().openFile("test/pcm24_48000_mono.wav", .{});
-    defer file.close();
-
-    var wav_decoder = try decoder(file.reader());
-    try expectEqual(@as(usize, 48000), wav_decoder.sampleRate());
-    try expectEqual(@as(usize, 1), wav_decoder.channels());
-    try expectEqual(@as(usize, 24), wav_decoder.bits());
-    try expectEqual(@as(usize, 508800), wav_decoder.remaining());
-
-    var buf: [1]f32 = undefined;
-    var i: usize = 0;
-    while (i < 1000) : (i += 1) {
-        try expectEqual(@as(usize, 1), try wav_decoder.read(f32, &buf));
-    }
-    try expectEqual(@as(usize, 507800), wav_decoder.remaining());
-
-    while (true) {
-        const samples_read = try wav_decoder.read(f32, &buf);
-        if (samples_read == 0) {
-            break;
-        }
-        try expectEqual(@as(usize, 1), samples_read);
-    }
-}
-
-test "pcm(bits=24) sample_rate=44100 channels=2" {
-    var file = try std.fs.cwd().openFile("test/pcm24_44100_stereo.wav", .{});
-    defer file.close();
-
-    var wav_decoder = try decoder(file.reader());
-    try expectEqual(@as(usize, 44100), wav_decoder.sampleRate());
-    try expectEqual(@as(usize, 2), wav_decoder.channels());
-    try expectEqual(@as(usize, 24), wav_decoder.bits());
-    try expectEqual(@as(usize, 157952), wav_decoder.remaining());
-
-    var buf: [1]f32 = undefined;
-    while (true) {
-        const samples_read = try wav_decoder.read(f32, &buf);
-        if (samples_read == 0) {
-            break;
-        }
-        try expectEqual(@as(usize, 1), samples_read);
-    }
-}
-
-test "ieee_float(bits=32) sample_rate=48000 channels=2" {
-    var file = try std.fs.cwd().openFile("test/float32_48000_stereo.wav", .{});
-    defer file.close();
-
-    var wav_decoder = try decoder(file.reader());
-    try expectEqual(@as(usize, 48000), wav_decoder.sampleRate());
-    try expectEqual(@as(usize, 2), wav_decoder.channels());
-    try expectEqual(@as(usize, 32), wav_decoder.bits());
-    try expectEqual(@as(usize, 592342), wav_decoder.remaining());
-
-    var buf: [64]f32 = undefined;
-    while (true) {
-        if (try wav_decoder.read(f32, &buf) < buf.len) {
-            break;
-        }
-    }
-}
-
-test "ieee_float(bits=32) sample_rate=96000 channels=2" {
-    var file = try std.fs.cwd().openFile("test/float32_96000_stereo.wav", .{});
-    defer file.close();
-
-    var wav_decoder = try decoder(file.reader());
-    try expectEqual(@as(usize, 96000), wav_decoder.sampleRate());
-    try expectEqual(@as(usize, 2), wav_decoder.channels());
-    try expectEqual(@as(usize, 32), wav_decoder.bits());
-    try expectEqual(@as(usize, 67744), wav_decoder.remaining());
-
-    var buf: [64]f32 = undefined;
-    while (true) {
-        if (try wav_decoder.read(f32, &buf) < buf.len) {
-            break;
-        }
-    }
-
-    try expectEqual(@as(usize, 0), wav_decoder.remaining());
-}
-
-test "error truncated" {
-    var file = try std.fs.cwd().openFile("test/error-trunc.wav", .{});
-    defer file.close();
-
-    var wav_decoder = try decoder(file.reader());
-    var buf: [3000]f32 = undefined;
-    try expectError(error.EndOfStream, wav_decoder.read(f32, &buf));
-}
-
-test "error data_size too big" {
-    var file = try std.fs.cwd().openFile("test/error-data_size1.wav", .{});
-    defer file.close();
-
-    var wav_decoder = try decoder(file.reader());
-
-    var buf: [1]u8 = undefined;
-    var i: usize = 0;
-    while (i < 44100) : (i += 1) {
-        try expectEqual(@as(usize, 1), try wav_decoder.read(u8, &buf));
-    }
-    try expectError(error.EndOfStream, wav_decoder.read(u8, &buf));
-}
-
-fn testEncodeDecode(comptime T: type, comptime sample_rate: usize) !void {
-    const twopi = std.math.pi * 2.0;
-    const freq = 440.0;
-    const secs = 3;
-    const increment = freq / @as(f32, @floatFromInt(sample_rate)) * twopi;
-
-    const buf = try std.testing.allocator.alloc(u8, sample_rate * @bitSizeOf(T) / 8 * (secs + 1));
-    defer std.testing.allocator.free(buf);
-
-    var stream = std.io.fixedBufferStream(buf);
-    var wav_encoder = try encoder(T, stream.writer(), stream.seekableStream(), sample_rate, 1);
-
-    var phase: f32 = 0.0;
-    var i: usize = 0;
-    while (i < secs * sample_rate) : (i += 1) {
-        try wav_encoder.write(f32, &.{std.math.sin(phase)});
-        phase += increment;
-    }
-
-    try wav_encoder.finalize();
-    try stream.seekTo(0);
-
-    var wav_decoder = try decoder(stream.reader());
-    try expectEqual(sample_rate, wav_decoder.sampleRate());
-    try expectEqual(@as(usize, 1), wav_decoder.channels());
-    try expectEqual(secs * sample_rate, wav_decoder.remaining());
-
-    phase = 0.0;
-    i = 0;
-    while (i < secs * sample_rate) : (i += 1) {
-        var value: [1]f32 = undefined;
-        try expectEqual(try wav_decoder.read(f32, &value), 1);
-        try std.testing.expectApproxEqAbs(std.math.sin(phase), value[0], 0.0001);
-        phase += increment;
-    }
-
-    try expectEqual(@as(usize, 0), wav_decoder.remaining());
-}
-
-test "encode-decode sine" {
-    try testEncodeDecode(f32, 44100);
-    try testEncodeDecode(i24, 48000);
-    try testEncodeDecode(i16, 44100);
+) !Encoder(T, @TypeOf(WriteSeekableStream.writer()), @TypeOf(WriteSeekableStream.seekableStream())) {
+    const Enc = Encoder(T, @TypeOf(WriteSeekableStream.writer()), @TypeOf(WriteSeekableStream.seekableStream()));
+    return Enc.init(WriteSeekableStream.writer(), WriteSeekableStream.seekableStream(), sample_rate, channels);
 }

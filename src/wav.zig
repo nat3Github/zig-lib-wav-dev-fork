@@ -391,14 +391,10 @@ pub fn Encoder(
         pub fn channels(self: *const Self) usize {
             return self.fmt.channels;
         }
-
-        /// Write samples of type S to stream after converting to type T. Supports PCM encoded ints and
-        /// IEEE float. Multi-channel samples must be interleaved: samples for time `t` for all channels
-        /// are written to `t * channels`.
-        /// buf.len must be multiple of channels
-        pub fn write(self: *Self, comptime S: type, buf: []const S, comptime interleaved: bool) Error!void {
+        pub fn writeEx(self: *Self, comptime S: type, buf: []const S, frame_num: usize, comptime interleaved: bool) Error!void {
             assert(buf.len % self.channels() == 0);
-            const frames = buf.len / self.channels();
+            const frames = @min(buf.len / self.channels(), frame_num);
+
             for (0..frames) |frame| {
                 for (0..self.channels()) |channel| {
                     const index = if (interleaved)
@@ -420,6 +416,15 @@ pub fn Encoder(
                     }
                 }
             }
+        }
+
+        /// Write samples of type S to stream after converting to type T. Supports PCM encoded ints and
+        /// IEEE float. Multi-channel samples must be interleaved: samples for time `t` for all channels
+        /// are written to `t * channels`.
+        /// buf.len must be multiple of channels
+        pub fn write(self: *Self, comptime S: type, buf: []const S, comptime interleaved: bool) Error!void {
+            assert(buf.len % self.channels() == 0);
+            self.writeEx(S, buf, buf.len / self.channels(), interleaved);
         }
 
         fn writeHeader(self: *Self) Error!void {

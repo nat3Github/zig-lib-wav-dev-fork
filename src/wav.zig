@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const bad_type = "sample type must be u8, i16, i24, or f32";
 const assert = std.debug.assert;
 pub const tests = @import("tests.zig");
 test "test" {
@@ -192,7 +191,6 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
         fn readInternal(self: *Self, comptime S: type, comptime T: type, buf: []T, comptime interleaved: bool) !usize {
             assert(buf.len % self.channels() == 0);
             var reader = self.counting_reader.reader();
-            // std.log.warn("remaining : {}", .{self.remaining()});
             const limit = @min(buf.len, self.remaining());
             const frames = limit / self.channels();
             for (0..frames) |frame| {
@@ -275,14 +273,14 @@ pub const sample = struct {
             i8, i16, i24, i32 => switch (T) {
                 i8, i16, i24, i32 => convertSignedInt(T, value),
                 f32 => convertIntToFloat(T, value),
-                else => @compileError(bad_type),
+                else => unreachable,
             },
             f32 => switch (T) {
                 i8, i16, i24, i32 => convertFloatToInt(T, value),
                 f32 => value,
-                else => @compileError(bad_type),
+                else => unreachable,
             },
-            else => @compileError(bad_type),
+            else => unreachable,
         };
     }
 
@@ -345,25 +343,25 @@ pub fn Encoder(
             writer: WriterType,
             seekable: SeekableType,
             sample_rate: usize,
-            channels: usize,
+            channel_num: usize,
         ) Error!Self {
             const bits = switch (T) {
                 u8 => 8,
                 i16 => 16,
                 i24 => 24,
                 f32 => 32,
-                else => @compileError(bad_type),
+                else => unreachable,
             };
 
             if (sample_rate == 0 or sample_rate > std.math.maxInt(u32)) {
                 std.log.debug("invalid sample_rate {}", .{sample_rate});
                 return error.InvalidArgument;
             }
-            if (channels == 0 or channels > std.math.maxInt(u16)) {
-                std.log.debug("invalid channels {}", .{channels});
+            if (channel_num == 0 or channel_num > std.math.maxInt(u16)) {
+                std.log.debug("invalid channels {}", .{channel_num});
                 return error.InvalidArgument;
             }
-            const bytes_per_second = sample_rate * channels * bits / 8;
+            const bytes_per_second = sample_rate * channel_num * bits / 8;
             if (bytes_per_second > std.math.maxInt(u32)) {
                 std.log.debug("bytes_per_second, {}, too large", .{bytes_per_second});
                 return error.InvalidArgument;
@@ -376,12 +374,12 @@ pub fn Encoder(
                     .code = switch (T) {
                         u8, i16, i24 => .pcm,
                         f32 => .ieee_float,
-                        else => @compileError(bad_type),
+                        else => unreachable,
                     },
-                    .channels = @intCast(channels),
+                    .channels = @intCast(channel_num),
                     .sample_rate = @intCast(sample_rate),
                     .bytes_per_second = @intCast(bytes_per_second),
-                    .block_align = @intCast(channels * bits / 8),
+                    .block_align = @intCast(channel_num * bits / 8),
                     .bits = @intCast(bits),
                 },
             };
@@ -390,28 +388,37 @@ pub fn Encoder(
             return self;
         }
 
+        pub fn channels(self: *const Self) usize {
+            return self.fmt.channels;
+        }
+
         /// Write samples of type S to stream after converting to type T. Supports PCM encoded ints and
         /// IEEE float. Multi-channel samples must be interleaved: samples for time `t` for all channels
         /// are written to `t * channels`.
-        pub fn write(self: *Self, comptime S: type, buf: []const S) Error!void {
-            switch (T) {
-                u8,
-                i16,
-                i24,
-                => {
-                    for (buf) |x| {
-                        try self.writer.writeInt(T, sample.convert(T, x), .little);
-                        self.data_size += @bitSizeOf(T) / 8;
+        /// buf.len must be multiple of channels
+        pub fn write(self: *Self, comptime S: type, buf: []const S, comptime interleaved: bool) Error!void {
+            assert(buf.len % self.channels() == 0);
+            const frames = buf.len / self.channels();
+            for (0..frames) |frame| {
+                for (0..self.channels()) |channel| {
+                    const index = if (interleaved)
+                        sample.interleaved_index(self.channels(), frame, channel)
+                    else
+                        sample.planar_index(frames, frame, channel);
+                    const x = buf[index];
+                    switch (T) {
+                        u8, i16, i24 => {
+                            try self.writer.writeInt(T, sample.convert(T, x), .little);
+                            self.data_size += @bitSizeOf(T) / 8;
+                        },
+                        f32 => {
+                            const f: f32 = sample.convert(f32, x);
+                            try self.writer.writeAll(std.mem.asBytes(&f));
+                            self.data_size += @bitSizeOf(T) / 8;
+                        },
+                        else => unreachable,
                     }
-                },
-                f32 => {
-                    for (buf) |x| {
-                        const f: f32 = sample.convert(f32, x);
-                        try self.writer.writeAll(std.mem.asBytes(&f));
-                        self.data_size += @bitSizeOf(T) / 8;
-                    }
-                },
-                else => @compileError(bad_type),
+                }
             }
         }
 

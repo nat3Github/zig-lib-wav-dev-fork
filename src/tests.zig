@@ -247,7 +247,7 @@ fn testEncodeDecode(comptime T: type, comptime sample_rate: usize) !void {
     var phase: f32 = 0.0;
     var i: usize = 0;
     while (i < secs * sample_rate) : (i += 1) {
-        try wav_encoder.write(f32, &.{std.math.sin(phase)});
+        try wav_encoder.write(f32, &.{std.math.sin(phase)}, true);
         phase += increment;
     }
 

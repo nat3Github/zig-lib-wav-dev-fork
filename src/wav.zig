@@ -78,10 +78,7 @@ const FormatChunk = packed struct {
 pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type) type {
     return struct {
         const Self = @This();
-
         const ReaderType = std.io.CountingReader(InnerReaderType);
-        const Error = ReaderType.Error || error{ EndOfStream, InvalidFileType, InvalidArgument, InvalidSize, InvalidValue, Overflow, Unsupported };
-
         counting_reader: ReaderType,
         seekable_stream: SeekAbleStreamType,
         fmt: FormatChunk,
@@ -108,7 +105,7 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
             return bytes_remaining / sample_size;
         }
         /// Parse and validate headers/metadata. Prepare to read samples.
-        fn init(readable: InnerReaderType, seekable: SeekAbleStreamType) Error!Self {
+        fn init(readable: InnerReaderType, seekable: SeekAbleStreamType) !Self {
             comptime std.debug.assert(builtin.target.cpu.arch.endian() == .little);
             try seekable.seekTo(0);
 
@@ -265,11 +262,11 @@ pub const sample = struct {
     }
     /// Converts between PCM and float sample types.
     pub fn convert(comptime T: type, value: anytype) T {
+        const bad_type = "sample type must be u8, i16, i24, i32, f32, f64";
         const S = @TypeOf(value);
         if (S == T) {
             return value;
         }
-
         // PCM uses unsigned 8-bit ints instead of signed. Special case.
         if (S == u8) {
             const new_value: i8 = @bitCast(value -% 128);
@@ -281,16 +278,16 @@ pub const sample = struct {
 
         return switch (S) {
             i8, i16, i24, i32 => switch (T) {
-                i8, i16, i24, i32 => convertSignedInt(T, value),
-                f32 => convertIntToFloat(T, value),
-                else => unreachable,
+                i8, i16, i24, i32 => sample.convertSignedInt(T, value),
+                f32, f64 => sample.convertIntToFloat(T, value),
+                else => @compileError(bad_type),
             },
-            f32 => switch (T) {
-                i8, i16, i24, i32 => convertFloatToInt(T, value),
-                f32 => value,
-                else => unreachable,
+            f32, f64 => switch (T) {
+                i8, i16, i24, i32 => sample.convertFloatToInt(T, value),
+                f32, f64 => @as(T, value),
+                else => @compileError(bad_type),
             },
-            else => unreachable,
+            else => @compileError(bad_type),
         };
     }
 
@@ -342,7 +339,6 @@ pub fn Encoder(
         const Self = @This();
         writer: WriterType,
         seekable: SeekableType,
-
         fmt: FormatChunk,
         data_size: usize = 0,
 
@@ -437,11 +433,9 @@ pub fn Encoder(
         fn writeHeader(self: *Self) !void {
             // Size of RIFF header + fmt id/size + fmt chunk + data id/size.
             const header_size: usize = 12 + 8 + @sizeOf(@TypeOf(self.fmt)) + 8;
-
             if (header_size + self.data_size > std.math.maxInt(u32)) {
                 return error.Overflow;
             }
-
             try self.writer.writeAll("RIFF");
             try self.writer.writeInt(u32, @intCast(header_size + self.data_size), .little); // Overwritten by finalize().
             try self.writer.writeAll("WAVE");

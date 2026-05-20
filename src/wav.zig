@@ -82,8 +82,8 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
         counting_reader: ReaderType,
         seekable_stream: SeekAbleStreamType,
         fmt: FormatChunk,
-        data_start: usize,
-        data_size: usize,
+        data_start: u64,
+        data_size: u64,
 
         pub fn sampleRate(self: *const Self) usize {
             return self.fmt.sample_rate;
@@ -96,7 +96,7 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
         pub fn bits(self: *const Self) usize {
             return self.fmt.bits;
         }
-        /// Number of samples remaining.
+        /// Number of samples remaining. samples not frames!
         pub fn remaining(self: *const Self) usize {
             const sample_size = self.bits() / 8;
             const bytes_remaining = self.data_size + self.data_start - self.counting_reader.bytes_read;
@@ -146,7 +146,7 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
                     data_size = chunk_size;
                     break;
                 } else {
-                    std.log.info("skipping unrecognized chunk {s}", .{chunk_id});
+                    // std.log.info("skipping unrecognized chunk {s}", .{chunk_id});
                     try reader.skipBytes(chunk_size, .{});
                 }
             }
@@ -156,10 +156,10 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
                 return error.InvalidFileType;
             }
 
-            std.log.info(
-                "{}(bits={}) sample_rate={} channels={} size=0x{x}",
-                .{ fmt.?.code, fmt.?.bits, fmt.?.sample_rate, fmt.?.channels, total_size },
-            );
+            // std.log.info(
+            //     "{}(bits={}) sample_rate={} channels={} size=0x{x}",
+            //     .{ fmt.?.code, fmt.?.bits, fmt.?.sample_rate, fmt.?.channels, total_size },
+            // );
 
             const data_start = counting_reader.bytes_read;
             if (data_start + data_size > total_size) {
@@ -180,72 +180,124 @@ pub fn Decoder(comptime InnerReaderType: type, comptime SeekAbleStreamType: type
 
         /// Read samples from stream and converts to type T. Supports PCM encoded ints and IEEE float.
         /// returns frames read, rest of buffer is nulled
-        pub fn read(self: *Self, comptime T: type, buf: []T, comptime interleaved: bool) !usize {
-            assert(buf.len % self.channels() == 0);
+        pub fn read(
+            self: *Self,
+            comptime T: type,
+            buf: []T,
+            cfg: ChannelConfig,
+            comptime interleaved: bool,
+        ) !usize {
+            for (buf) |*b| b.* = std.mem.zeroes(T);
             return switch (self.fmt.code) {
                 .pcm => switch (self.fmt.bits) {
-                    8 => self.readInternal(u8, T, buf, interleaved),
-                    16 => self.readInternal(i16, T, buf, interleaved),
-                    24 => self.readInternal(i24, T, buf, interleaved),
-                    32 => self.readInternal(i32, T, buf, interleaved),
+                    8 => self.readInternal(u8, T, buf, cfg, interleaved),
+                    16 => self.readInternal(i16, T, buf, cfg, interleaved),
+                    24 => self.readInternal(i24, T, buf, cfg, interleaved),
+                    32 => self.readInternal(i32, T, buf, cfg, interleaved),
                     else => unreachable,
                 },
-                .ieee_float => self.readInternal(f32, T, buf, interleaved),
+                .ieee_float => self.readInternal(f32, T, buf, cfg, interleaved),
                 else => unreachable,
             };
         }
-        fn readInternal(self: *Self, comptime S: type, comptime T: type, buf: []T, comptime interleaved: bool) !usize {
-            assert(buf.len % self.channels() == 0);
+        fn readInternal(
+            self: *Self,
+            comptime S: type,
+            comptime T: type,
+            buf: []T,
+            cfg: ChannelConfig,
+            comptime interleaved: bool,
+        ) !usize {
+            const out_chns = cfg.output_channels;
+            assert(buf.len % out_chns == 0);
             var reader = self.counting_reader.reader();
-            const limit = @min(buf.len, self.remaining());
-            const frames = limit / self.channels();
-            const total_frames = buf.len / self.channels();
-            for (0..frames) |frame| {
-                for (0..self.channels()) |channel| {
-                    const index = if (interleaved)
-                        sample.interleaved_index(self.channels(), frame, channel)
-                    else
-                        sample.planar_index(total_frames, frame, channel);
+            const remaining_frames = self.remaining() / self.channels();
+            const out_frames_total = buf.len / out_chns;
+            const can_read = @min(remaining_frames, out_frames_total);
+            for (0..can_read) |frame| {
+                for (cfg.input_x_output[0..self.channels()]) |outputs| {
                     const s = sample.convert(T, switch (@typeInfo(S)) {
                         .float => try readFloat(S, reader),
                         .int => try reader.readInt(S, .little),
                         else => unreachable,
                     });
-                    buf[index] = s;
+                    for (outputs) |out_ch| {
+                        const index = if (interleaved)
+                            sample.interleaved_index(out_chns, frame, out_ch)
+                        else
+                            sample.planar_index(out_frames_total, frame, out_ch);
+                        buf[index] += s;
+                    }
                 }
             }
-            for (frames..total_frames) |frame| {
-                for (0..self.channels()) |channel| {
-                    const index = if (interleaved)
-                        sample.interleaved_index(self.channels(), frame, channel)
-                    else
-                        sample.planar_index(total_frames, frame, channel);
-                    buf[index] = sample.convert(T, @as(f32, 0.0));
-                }
-            }
-            return frames;
+            return can_read;
         }
-        pub fn totalFrames(self: *const Self) usize {
+        pub fn totalFrames(self: *const Self) u64 {
             const bytes_per_frame = (self.fmt.bits / 8) * self.fmt.channels;
-            return self.data_size / bytes_per_frame;
+            return self.data_size / @as(u64, @intCast(bytes_per_frame));
         }
-        pub fn currentFrame(self: *const Self) usize {
-            const bytes_read_in_data_chunk = self.counting_reader.bytes_read - self.data_start;
+        pub fn currentFrame(self: *const Self) u64 {
+            const bytes_read_in_data_chunk = self.counting_reader.bytes_read - @as(u64, @intCast(self.data_start));
             const bytes_per_frame = (self.fmt.bits / 8) * self.fmt.channels;
-            return bytes_read_in_data_chunk / bytes_per_frame;
+            return bytes_read_in_data_chunk / @as(u64, @intCast(bytes_per_frame));
         }
 
-        pub fn seekToFrame(self: *Self, frame: usize) !usize {
-            const frame_number = @min(frame, self.totalFrames());
+        pub fn seekToFrame(self: *Self, frame: u64) !u64 {
+            const frame_number: u64 = @min(frame, self.totalFrames());
             const bytes_per_frame = (self.fmt.bits / 8) * self.fmt.channels;
-            const target_data_offset = frame_number * bytes_per_frame;
-            const absolute_target_offset = @as(u64, self.data_start + target_data_offset);
+            const target_data_offset: u64 = frame_number * @as(u64, @intCast(bytes_per_frame));
+            const absolute_target_offset = self.data_start + target_data_offset;
             try self.seekable_stream.seekTo(absolute_target_offset);
             self.counting_reader.bytes_read = absolute_target_offset;
             return self.currentFrame();
         }
     };
 }
+
+/// source_map[2] describes the outputs of channel 2
+pub const ChannelConfig = struct {
+    pub const stereo1x2 = ChannelConfig{
+        .input_x_output = &.{
+            &.{ 0, 1 },
+        },
+        .output_channels = 2,
+    };
+    pub const stereo2x2 = ChannelConfig{
+        .input_x_output = &.{
+            &.{0},
+            &.{1},
+        },
+        .output_channels = 2,
+    };
+    /// all channels 0 and 1 add to channel 0, other channels are ignored
+    /// this can overflow / distort if the sampleformat is not big enough
+    pub const mono2x1 = ChannelConfig{
+        .input_x_output = &.{
+            &.{0},
+            &.{0},
+        },
+        .output_channels = 1,
+    };
+    /// all channels add to channel 0
+    /// this can overflow / distort if the sampleformat is not big enough
+    pub const mono = mono1024x1;
+    const m1024 = std.mem.zeroes([1024][1]u16);
+    pub const mono1024x1 = ChannelConfig{
+        .input_x_output = &m1024,
+        .output_channels = 1,
+    };
+    input_x_output: []const []const u16,
+    output_channels: u16,
+
+    pub fn calc_output_channels(self: *@This()) u16 {
+        var k: usize = 0;
+        for (self.input_x_output) |chan| {
+            const m = std.mem.max(u16, chan);
+            if (m > k) k = m;
+        }
+        return k + 1;
+    }
+};
 
 pub fn decoder(ReadSeekableStream: anytype) !Decoder(@TypeOf(ReadSeekableStream.reader()), @TypeOf(ReadSeekableStream.seekableStream())) {
     const Dec = Decoder(@TypeOf(ReadSeekableStream.reader()), @TypeOf(ReadSeekableStream.seekableStream()));

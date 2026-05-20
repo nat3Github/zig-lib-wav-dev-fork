@@ -11,8 +11,6 @@ pub fn build(b: *std.Build) void {
     });
 
     const wav_unit_tests = b.addTest(.{
-        .target = target,
-        .optimize = optimize,
         .root_module = wav_module,
     });
 
